@@ -15,31 +15,54 @@
 ## 目录结构
 
 ```
-youtube-gateway/
+yt-gateway/
 └── functions/
     └── api/
-        ├── channel.js   # 频道枚举（InnerTube browse 主力 + Piped 兜底）
-        ├── resolve.js   # 视频下载直链（InnerTube player 主力 + Piped 兜底）
+        ├── channel.js   # 频道枚举（InnerTube browse 主力 → Piped → 频道 RSS）
+        ├── resolve.js   # 视频下载直链（davidcyriltech 主力 → Piped → InnerTube player）
         └── stream.js    # 透传视频字节（支持 Range）
 ```
 
-## 后端选型（2026-10-12 实测后重定）
+## 后端选型
 
 | 后端 | 状态 | 结论 |
 |---|---|---|
-| davidcyriltech (`apis.davidcyriltech.my.id`) | ❌ 已死（SSL EOF，10-11/10-12 两次复测一致） | 移除 |
+| davidcyriltech (`apis.davidcyriltech.my.id`) | ⚠️ 2026-10-12 判死（SSL EOF）；`/api/resolve` 实测又活了（2026-11-06，仍作下载主力） | 保留，Piped 兜底 |
 | Invidious 公共实例 | ❌ API 全关（`api.invidious.io` 实测 `api:false`，只剩 3 个实例且官方建议自托管） | 移除 |
 | **InnerTube 直连**（`youtubei/v1/browse` + `/player`） | ✅ 主力 | 不依赖任何第三方实例，实例死光也能用 |
-| **Piped 公共实例**（kavin.rocks / piped.yt / ducks.party / private.coffee） | ✅ 兜底 | 15 个存活实例、联邦架构，比 Invidious 稳 |
+| **Piped 公共实例** | ✅ 兜底 | 联邦架构；`/c/{handle}` 已普遍 500，必须先把 handle 解析成 UCid 再走 `/channel/{id}` |
+| **频道 RSS**（`feeds/videos.xml`） | ✅ 最后兜底（2026-11-06 新增） | 只回 15 条、无翻页，但只要 `youtube.com` 通就有数据 |
+
+## 2026-11-06 修复：`/api/channel` 从「一律 502」恢复到可用
+
+| 现象 | 根因 | 修法 |
+|---|---|---|
+| `@handle` 查询必 502，`error: innertube HTTP 400 invalid argument` | `@handle` 被直接当成 `browseId` 发出去，InnerTube 只认 `UC...` | 新增 `resolveChannelId()`：先打 `navigation/resolve_url` 换 UCid（带进程内缓存） |
+| 换成 UCid 后 200，但 `videos: []` | 频道页视频已从 `videoRenderer` 换成 `lockupViewModel`，旧解析器一条都抽不到 | 解析器两种结构都认；时长取 badge 文本，播放量/发布时间从 `metadataRows` 里取 |
+| Videos 标签拿到的其实是 Home 标签内容 | Videos 的 `params` 不是固定常量（旧值会落回 Home） | 从频道页 `tabs[].tabRenderer.endpoint.browseEndpoint.params` 里读，读不到才回退内置值 |
+| InnerTube 偶发 `bad client` | `clientVersion` 写死会过期 | 启动时从 `youtube.com` 首页的 `INNERTUBE_CLIENT_VERSION` 取（缓存 6h），取不到用常量兜底 |
+
+同批小改：Piped 实例 4 → 9 个（失败实例进 5 分钟冷却）、新增 RSS 兜底后端、不存在的频道直接回 404 `channel not found`（不再让三个后端各失败一遍）。
+
+实测（2026-11-06，本机直连 YouTube）：
+
+```
+@MrBeast                  → 200 innertube 30 条 + nextpage（翻页 30 条）
+UCX6OQ3DkcsbYNE6H8uQQuVA  → 200 innertube 30 条
+完整频道 URL              → 200 innertube 30 条
+@MrBeast&backend=piped    → 200 piped 30 条
+@MrBeast&backend=rss      → 200 rss 15 条
+@不存在的频道             → 404 {"error":"channel not found"}
+```
 
 ## 端点详解
 
 ### 1. 频道枚举
 
 ```
-GET /api/channel?channel=@OlympusMedical
+GET /api/channel?channel=@mkbhd
 GET /api/channel?channel=UCxxxxxxxxxxxxxxxxxxxxxx
-GET /api/channel?channel=https://www.youtube.com/@OlympusMedical/videos
+GET /api/channel?channel=https://www.youtube.com/@mkbhd/videos
 ```
 
 返回（统一形状）：
@@ -61,7 +84,7 @@ GET /api/channel?channel=https://www.youtube.com/@OlympusMedical/videos
 翻页（**必须带 backend 锁回同一后端**）：
 
 ```
-GET /api/channel?channel=@OlympusMedical&nextpage=<上一页的nextpage>&backend=innertube
+GET /api/channel?channel=@mkbhd&nextpage=<上一页的nextpage>&backend=innertube
 ```
 
 ### 2. 视频下载直链
@@ -96,11 +119,11 @@ GET /api/stream?u=<上一步 download_url 里的 u 参数>
 npm install -g wrangler
 npx wrangler login
 
-# 2. 在 youtube-gateway/ 目录下部署（注意：是 gateway 目录，不是 functions/）
-cd E:\豆包交付\youtube-gateway
-npx wrangler pages deploy . --project-name=youtube-gateway
+# 2. 在仓库根目录（含 functions/ 的那一层）部署
+cd <这个仓库的检出目录>
+npx wrangler pages deploy . --project-name=yt-gateway
 
-# 3. 部署完拿到 https://youtube-gateway.pages.dev
+# 3. 部署完拿到 https://yt-gateway.pages.dev
 ```
 
 ## 部署后必做：填 GW 常量
@@ -108,7 +131,7 @@ npx wrangler pages deploy . --project-name=youtube-gateway
 打开 `functions/api/resolve.js`，把第 7 行 `GW` 填成你的网关域名：
 
 ```js
-const GW = "https://youtube-gateway.pages.dev";
+const GW = "https://yt-gateway.pages.dev";
 ```
 
 **不填 GW，InnerTube/Piped 返回的直链就是裸 googlevideo/pipedproxy 链接，沙箱下不动。**
@@ -118,13 +141,13 @@ const GW = "https://youtube-gateway.pages.dev";
 
 ```bash
 # 1. 频道枚举：应返回 JSON，x-backend 头告诉你实际走哪个后端
-curl -i "https://youtube-gateway.pages.dev/api/channel?channel=@OlympusMedical"
+curl -i "https://yt-gateway.pages.dev/api/channel?channel=@mkbhd"
 
 # 2. 视频直链：应返回 JSON，download_url 指向你的网关
-curl -i "https://youtube-gateway.pages.dev/api/resolve?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+curl -i "https://yt-gateway.pages.dev/api/resolve?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
 # 3. 字节透传：应返回视频字节（HTTP 206）
-curl -i -H "Range: bytes=0-1023" "https://youtube-gateway.pages.dev/api/stream?u=<download_url 里的 u>"
+curl -i -H "Range: bytes=0-1023" "https://yt-gateway.pages.dev/api/stream?u=<download_url 里的 u>"
 ```
 
 ## 关键注意 / 已踩的坑
@@ -145,10 +168,10 @@ curl -i -H "Range: bytes=0-1023" "https://youtube-gateway.pages.dev/api/stream?u
 
 ```python
 # 频道枚举
-export VIDEO_ENUM_API="https://youtube-gateway.pages.dev/api/channel?channel={u}"
+export VIDEO_ENUM_API="https://yt-gateway.pages.dev/api/channel?channel={u}"
 
 # 视频下载直链
-export VIDEO_ORIGIN_API="https://youtube-gateway.pages.dev/api/resolve?url={u}"
+export VIDEO_ORIGIN_API="https://yt-gateway.pages.dev/api/resolve?url={u}"
 ```
 
 `{u}` 会被替换成 URL 编码后的链接。`resolve` 返回 JSON 形状与 davidcyriltech 一致：
