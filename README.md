@@ -17,6 +17,9 @@
 ```
 yt-gateway/
 └── functions/
+    ├── _lib/            # 下划线开头：不会变成路由，放共享代码
+    │   ├── innertube.js # clientVersion 自发现 + innertubePost + context
+    │   └── health.js    # 后端/实例冷却（连续失败 3 次才进冷却，冷却中只沉队尾不剔除）
     └── api/
         ├── channel.js   # 频道枚举（InnerTube browse 主力 → Piped → 频道 RSS）
         ├── resolve.js   # 视频下载直链（davidcyriltech 主力 → Piped → InnerTube player）
@@ -53,6 +56,28 @@ UCX6OQ3DkcsbYNE6H8uQQuVA  → 200 innertube 30 条
 @MrBeast&backend=piped    → 200 piped 30 条
 @MrBeast&backend=rss      → 200 rss 15 条
 @不存在的频道             → 404 {"error":"channel not found"}
+```
+
+## 2026-11-06 加固：`/api/resolve`（同一套思路）
+
+| 项 | 之前 | 现在 |
+|---|---|---|
+| `clientVersion` | 写死 `2.20251001.00.00`，过期即失效 | 从 `youtube.com` 首页 `INNERTUBE_CLIENT_VERSION` 自发现，缓存 6h（`_lib/innertube.js`） |
+| Piped 实例 | 4 个，无冷却，每次从头撞 | 9 个，逐个 8s 超时；**连续失败 3 次**才进 5 分钟冷却，冷却中只沉队尾不剔除（`_lib/health.js`） |
+| 单视频失败 | 直接封后端 5 分钟（一个直播视频就能把 david 打下去） | 不封：一次失败只记一击，3 击才冷却 |
+| 选流 | 按 `height` 排序，Piped 的 LBRY/HLS 兜底源 `height` 全是 0，会选中 LBRY（实测 60s 拿不到字节） | 按「mp4 优先 / YouTube 原生清晰度 > LBRY」打分，HLS（m3u8）直接不用——`/api/stream` 是字节透传，透传播放列表没意义 |
+| InnerTube player | 只有 WEB 客户端（现在常回 `LOGIN_REQUIRED`） | WEB → ANDROID 两档兜底 |
+| `?url=` 之外 | 只能传完整 URL | 也支持 `?v=<11 位 videoId>` |
+
+实测（本机，2026-11-06）：
+
+```
+?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ → 200 davidcyriltech 480p
+?v=dQw4w9WgXcQ                                  → 200 davidcyriltech 480p
+?v=不存在的 id                                  → 502（三个后端各自报错，errors 里能看）
+无参数                                          → 400
+download_url 走 /api/stream → 206 + 前 1024 字节，magic "ftyp"（真·mp4）
+直播（如 jfKfPfyJRdk）                          → 502：david 500 / piped 500 / innertube 要登录，三家都不支持，属已知限制
 ```
 
 ## 端点详解

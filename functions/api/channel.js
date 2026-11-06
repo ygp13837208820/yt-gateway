@@ -10,52 +10,14 @@
 //      现在两种结构都认，时长/播放量/发布时间从 lockup 的 badge 与 metadataRows 里取。
 //   3. Videos 标签的 params 不再是固定常量（固定值会落回 Home 标签），改为从频道页
 //      自己的 tab 列表里读，读不到才回退到内置值。
-// 另外：clientVersion 不再写死，启动时从 youtube.com 首页的 INNERTUBE_CLIENT_VERSION 取，
-// 取不到才用常量兜底；Piped 实例从 4 个扩到 9 个，失败的实例记 5 分钟冷却。
+// 另外：clientVersion 不再写死，从 youtube.com 首页的 INNERTUBE_CLIENT_VERSION 取（见 _lib/innertube.js）；
+// Piped 实例从 4 个扩到 9 个，失败的实例进冷却期（见 _lib/health.js）。
 
-const INNERTUBE_KEY = "AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8";
-const UA =
-  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36";
-const API = "https://www.youtube.com/youtubei/v1";
+import { UA, innertubePost, webContext } from "../_lib/innertube.js";
+import { createCooldown } from "../_lib/health.js";
 
-// 兜底值：只在首页取不到 INNERTUBE_CLIENT_VERSION 时使用
-const DEFAULT_CLIENT_VERSION = "2.20261030.02.00";
 // 兜底值：Videos 标签的 params（正常路径是从频道页 tabs 里读）
 const FALLBACK_VIDEOS_PARAMS = "EgZ2aWRlb3PyBgQKAjoA";
-
-// ── clientVersion 自发现（模块作用域缓存，Workers 实例存活期间有效）──
-let clientVersionCache = { value: null, at: 0 };
-
-async function clientVersion() {
-  if (clientVersionCache.value && Date.now() - clientVersionCache.at < 6 * 3600 * 1000) {
-    return clientVersionCache.value;
-  }
-  try {
-    const r = await fetch("https://www.youtube.com/", {
-      headers: { "user-agent": UA },
-      cf: { cacheTtl: 3600, cacheEverything: true },
-    });
-    const html = await r.text();
-    const v = html.match(/"INNERTUBE_CLIENT_VERSION":"([\d.]+)"/)?.[1];
-    if (v) {
-      clientVersionCache = { value: v, at: Date.now() };
-      return v;
-    }
-  } catch {
-    /* 取不到就用兜底值 */
-  }
-  return DEFAULT_CLIENT_VERSION;
-}
-
-async function innertube(path, body) {
-  const r = await fetch(`${API}/${path}?key=${INNERTUBE_KEY}&prettyPrint=false`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "user-agent": UA },
-    body: JSON.stringify(body),
-  });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
-  return r.json();
-}
 
 const isChannelId = (s) => /^UC[\w-]{22}$/.test(String(s));
 
@@ -81,10 +43,7 @@ async function resolveChannelId(target) {
   const url = /^@/.test(target)
     ? `https://www.youtube.com/${target}`
     : `https://www.youtube.com/c/${target}`;
-  const j = await innertube("navigation/resolve_url", {
-    context: { client: { clientName: "WEB", clientVersion: await clientVersion(), hl: "en", gl: "US" } },
-    url,
-  });
+  const j = await innertubePost("navigation/resolve_url", { context: await webContext(), url });
   let id = null;
   const walk = (n) => {
     if (id || !n || typeof n !== "object") return;
@@ -198,21 +157,20 @@ function parseChannelHeader(j, fallbackId) {
 
 // ── 后端 1：InnerTube browse 直连 ──
 async function innertubeChannel(target, continuation) {
-  const cv = await clientVersion();
-  const ctx = { client: { clientName: "WEB", clientVersion: cv, hl: "en", gl: "US" } };
+  const ctx = await webContext();
 
   if (continuation) {
-    const j = await innertube("browse", { context: ctx, continuation });
+    const j = await innertubePost("browse", { context: ctx, continuation });
     const { videos, nextpage } = parseInnertube(j);
     return { channel: { id: "", name: "", subscribers: "" }, videos, nextpage };
   }
 
   const channelId = await resolveChannelId(target);
-  const home = await innertube("browse", { context: ctx, browseId: channelId });
+  const home = await innertubePost("browse", { context: ctx, browseId: channelId });
   const params = videosTabParams(home);
   let j = home;
   try {
-    j = await innertube("browse", { context: ctx, browseId: channelId, params });
+    j = await innertubePost("browse", { context: ctx, browseId: channelId, params });
   } catch {
     /* 拿不到 Videos 标签就用首页 */
   }
@@ -236,14 +194,7 @@ const PIPED = [
 ];
 
 // 实例冷却：坏掉的 5 分钟内不再排前面（内存级，够用）
-const pipedCooldown = new Map();
-
-function pipedOrder() {
-  const now = Date.now();
-  const alive = PIPED.filter((b) => (pipedCooldown.get(b) || 0) < now);
-  const cooling = PIPED.filter((b) => (pipedCooldown.get(b) || 0) >= now);
-  return [...alive, ...cooling];
-}
+const pipedCool = createCooldown({ cooldownMs: 5 * 60 * 1000 });
 
 async function pipedChannel(target, nextpage) {
   // Piped 的 /c/{handle} 现在多半 500，先解析成 UCid 再走 /channel/{id}
@@ -256,7 +207,7 @@ async function pipedChannel(target, nextpage) {
     }
   }
   let last = "no instance";
-  for (const b of pipedOrder()) {
+  for (const b of pipedCool.order(PIPED)) {
     try {
       let url;
       if (nextpage) {
@@ -271,14 +222,14 @@ async function pipedChannel(target, nextpage) {
         signal: AbortSignal.timeout(8000),
       });
       if (!r.ok) {
-        pipedCooldown.set(b, Date.now() + 5 * 60 * 1000);
+        pipedCool.fail(b);
         last = `${b} ${r.status}`;
         continue;
       }
       const j = await r.json();
       const list = j.relatedStreams;
       if (!Array.isArray(list) || (!list.length && !nextpage)) {
-        pipedCooldown.set(b, Date.now() + 5 * 60 * 1000);
+        pipedCool.fail(b);
         last = `${b} empty`;
         continue;
       }
@@ -290,6 +241,7 @@ async function pipedChannel(target, nextpage) {
         views: s.views != null ? String(s.views) : "",
         duration: s.duration != null ? `${s.duration}s` : "",
       }));
+      pipedCool.ok(b);
       return {
         channel: {
           id: j.id || target,
@@ -300,7 +252,7 @@ async function pipedChannel(target, nextpage) {
         nextpage: j.nextpage || null,
       };
     } catch (e) {
-      pipedCooldown.set(b, Date.now() + 2 * 60 * 1000);
+      pipedCool.fail(b, 2 * 60 * 1000);
       last = `${b} ${String(e).slice(0, 60)}`;
     }
   }
