@@ -98,7 +98,8 @@ async function pipedResolve(id) {
         success: true,
         result: {
           type: "video",
-          format: (best.format || "mp4").toLowerCase(),
+          // Piped 的 format 是 MPEG_4 这种枚举，统一成 mp4，别把 "mpeg_4" 漏给下游当扩展名
+          format: (best.mimeType || "").includes("video/mp4") ? "mp4" : (best.format || "mp4").toLowerCase(),
           title: j.title || "",
           thumbnail: j.thumbnailUrl || "",
           quality: best.quality || "",
