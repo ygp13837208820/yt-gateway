@@ -137,7 +137,9 @@ function encodeParams(sortCode, sinceKey) {
   const bytes = [];
   if (sortCode != null) bytes.push(...pbVarint(1, sortCode));
   bytes.push(...pbBytes(2, pbVarint(2, 1))); // 类型筛选项：只搜视频
-  bytes.push(...pbBytes(2, pbVarint(1, SINCE_CODES[sinceKey]))); // 时间范围筛选项
+  if (sinceKey && SINCE_CODES[sinceKey] != null) {
+    bytes.push(...pbBytes(2, pbVarint(1, SINCE_CODES[sinceKey]))); // 时间范围筛选项（可缺省）
+  }
   return b64(bytes);
 }
 
@@ -386,8 +388,14 @@ export async function onRequestGet({ request, env }) {
       body.params = VIDEO_PARAMS;
     }
     // 分页时也要带 params，否则第二页会悄悄跳回相关度排序
-    if (sinceParams) body.params = sinceParams;
-    else if (sortParams) body.params = sortParams;
+    if (sinceParams) {
+      body.params = sinceParams;
+    } else if (sortParams) {
+      // 只带 sort 时也走编码器：统一带上「只看视频」的类型筛选（CAM= → CAMSAhAB）。
+      // 解不出排序编号就退回发现值，绝不丢掉排序。
+      const code = sortCodeOf(sortParams);
+      body.params = code != null ? encodeParams(code, null) : sortParams;
+    }
     const j = await innertubePost("search", body, { timeout: 15000 });
     const { videos, continuation } = parseInnertube(j, limit);
     if (videos.length) {
