@@ -3,11 +3,13 @@
 // 输出：{success, query, backend, count, videos:[{videoId,title,channel,published,duration,views,url}], continuation}
 //
 // 后端：InnerTube /youtubei/v1/search（主力）→ Piped /search?filter=videos（降级）
+// 鉴权：配置了 GATEWAY_KEY 才校验 x-gateway-key；未配置则公开（见 _lib/auth.js）
 // 说明：params=EgIQAQ%3D%3D 是“只搜视频”的 protobuf 常量；不传会混进频道/播放列表。
 // 解析同时认老 videoRenderer 与新 lockupViewModel（2026 年 YouTube 已在搜索页混用）。
 
 import { UA, innertubePost, webContext } from "../_lib/innertube.js";
 import { createCooldown } from "../_lib/health.js";
+import { checkKey, keyConfigured, preflight } from "../_lib/auth.js";
 
 const VIDEO_PARAMS = "EgIQAQ%3D%3D";
 const MAX_LIMIT = 30;
@@ -22,13 +24,13 @@ const pipedCooldown = createCooldown();
 
 const isVideoId = (s) => /^[\w-]{11}$/.test(String(s || ""));
 
-function respond(data, status = 200) {
+function respond(data, status = 200, cache = "public, max-age=300") {
   return new Response(JSON.stringify(data), {
     status,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "access-control-allow-origin": "*",
-      "cache-control": "public, max-age=300",
+      "cache-control": cache,
     },
   });
 }
@@ -135,14 +137,24 @@ async function viaPiped(q, limit) {
   return null;
 }
 
-export async function onRequestGet({ request }) {
+export function onRequestOptions() {
+  return preflight();
+}
+
+export async function onRequestGet({ request, env }) {
+  const denied = checkKey(request, env);
+  if (denied) return denied;
+
+  // 开了鉴权就不再让边缘缓存：否则同一 URL 的缓存会绕过函数、绕过 key
+  const cache = keyConfigured(env) ? "no-store" : "public, max-age=300";
+
   const u = new URL(request.url);
   const q = (u.searchParams.get("q") || "").trim();
   const limit = Math.min(MAX_LIMIT, Math.max(1, parseInt(u.searchParams.get("limit") || DEFAULT_LIMIT, 10) || DEFAULT_LIMIT));
   const page = u.searchParams.get("page") || "";
 
-  if (!q) return respond({ success: false, error: "missing q" }, 400);
-  if (q.length > 120) return respond({ success: false, error: "q too long" }, 400);
+  if (!q) return respond({ success: false, error: "missing q" }, 400, cache);
+  if (q.length > 120) return respond({ success: false, error: "q too long" }, 400, cache);
 
   try {
     const body = { context: await webContext(), query: q };
@@ -154,7 +166,7 @@ export async function onRequestGet({ request }) {
     const j = await innertubePost("search", body, { timeout: 15000 });
     const { videos, continuation } = parseInnertube(j, limit);
     if (videos.length) {
-      return respond({ success: true, query: q, backend: "innertube", count: videos.length, videos, continuation });
+      return respond({ success: true, query: q, backend: "innertube", count: videos.length, videos, continuation }, 200, cache);
     }
     throw new Error("empty result");
   } catch (e) {
@@ -164,12 +176,12 @@ export async function onRequestGet({ request }) {
         success: true, query: q, backend: "piped:" + fb.backend,
         count: fb.videos.length, videos: fb.videos, continuation: null,
         note: "innertube failed: " + String(e.message || e),
-      });
+      }, 200, cache);
     }
     return respond({
       success: false, query: q,
       error: "innertube failed: " + String(e.message || e),
       hint: "check clientVersion / bot check; piped fallback also unavailable",
-    }, 502);
+    }, 502, cache);
   }
 }
