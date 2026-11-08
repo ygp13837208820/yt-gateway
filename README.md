@@ -201,3 +201,17 @@ export VIDEO_ORIGIN_API="https://yt-gateway.pages.dev/api/resolve?url={u}"
 
 `{u}` 会被替换成 URL 编码后的链接。`resolve` 返回 JSON 形状与 davidcyriltech 一致：
 `{success, result:{title, quality, download_url, ...}}`，现有解析代码零改动。
+
+## 鉴权与环境变量
+
+`/api/search` 支持可选的 header 鉴权，**只有配置了 `GATEWAY_KEY` 才启用**；未配置时保持公开，不会把自己锁死。
+
+```
+Cloudflare Pages → Settings → Variables and secrets → 添加 GATEWAY_KEY（Production）
+客户端：curl -H "x-gateway-key: <值>" "https://yt-gateway.pages.dev/api/search?q=endoscopy"
+```
+
+- 只校验请求头 `x-gateway-key`，不接受 `?key=`（查询串会进日志与历史记录）。
+- 启用鉴权时响应改为 `cache-control: no-store`，避免边缘缓存绕过校验。
+- 未带或带错 key 返回 `401 {"success":false,"error":"unauthorized"}`。
+- 新增/修改环境变量后需要一次新部署才生效（改一行 README 也算）。
