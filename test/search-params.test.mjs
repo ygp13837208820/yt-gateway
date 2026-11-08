@@ -169,7 +169,7 @@ function check(name, fn) {
   });
   check("(a) Upload date chip 的 params 被读出来", () => {
     assert.equal(JSON.parse(sc[0].body).params, undefined, "探测请求不能带 params");
-    assert.equal(JSON.parse(sc[1].body).params, "EgQIAhAB");
+    assert.equal(JSON.parse(sc[1].body).params, "CAISAhAB"); // sort 单独也走编码器：field1(2)+field2{10 01}
   });
   check("(b) 响应头 x-sort: date", () => {
     assert.equal(r.headers.get("x-sort"), "date");
@@ -187,7 +187,7 @@ function check(name, fn) {
   const j = JSON.parse(searchCalls(calls)[1].body);
   check("(b) 别名 upload_date → date", () => {
     assert.equal(r.headers.get("x-sort"), "date");
-    assert.equal(j.params, "EgQIAhAB");
+    assert.equal(j.params, "CAISAhAB"); // sort 单独也走编码器
   });
 }
 
@@ -198,7 +198,7 @@ function check(name, fn) {
   const j = JSON.parse(searchCalls(calls)[1].body);
   check("(b) 别名 view_count → views 且 params 正确", () => {
     assert.equal(r.headers.get("x-sort"), "views");
-    assert.equal(j.params, "EgQIAxAB");
+    assert.equal(j.params, "CAMSAhAB"); // sort 单独也走编码器（views=3）
   });
 }
 
@@ -209,7 +209,7 @@ function check(name, fn) {
   const j = JSON.parse(searchCalls(calls)[1].body);
   check("(b) 分页时同时带 continuation 和 params", () => {
     assert.equal(j.continuation, "TOKEN123");
-    assert.equal(j.params, "EgQIAhAB");
+    assert.equal(j.params, "CAISAhAB"); // sort 单独也走编码器
     assert.equal(r.headers.get("x-sort"), "date");
   });
 }
@@ -351,9 +351,9 @@ const REAL_CHIPS = {
   const calls = installFetch({ chips: REAL_CHIPS });
   const r = await mod.onRequestGet(get("/api/search?q=endoscopy&sort=views"));
   const j = JSON.parse(searchCalls(calls)[1].body);
-  check("真实结构：Prioritize/Popularity → x-sort: views + params CAM%3D", () => {
+  check("真实结构：Prioritize/Popularity → x-sort: views + 编码为 CAMSAhAB（含类型筛选）", () => {
     assert.equal(r.headers.get("x-sort"), "views");
-    assert.equal(j.params, "CAM%3D");
+    assert.equal(j.params, "CAMSAhAB");
   });
 }
 
