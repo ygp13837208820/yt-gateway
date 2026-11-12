@@ -1,88 +1,88 @@
-# YouTube 代取网关（Cloudflare Pages Functions）
+# YouTube 浠ｅ彇缃戝叧锛圕loudflare Pages Functions锛?
 
-沙箱（国内受限环境）无法直连 youtube.com / googlevideo.com / youtubei.googleapis.com（TCP/TLS 被拦，HTTP 000）。
-本网关部署在 Cloudflare Pages（`*.pages.dev`），在边缘回源 YouTube 的 InnerTube 接口 + Piped 公共实例，
-沙箱只访问网关域名，不碰被污染的域。
+娌欑锛堝浗鍐呭彈闄愮幆澧冿級鏃犳硶鐩磋繛 youtube.com / googlevideo.com / youtubei.googleapis.com锛圱CP/TLS 琚嫤锛孒TTP 000锛夈€?
+鏈綉鍏抽儴缃插湪 Cloudflare Pages锛坄*.pages.dev`锛夛紝鍦ㄨ竟缂樺洖婧?YouTube 鐨?InnerTube 鎺ュ彛 + Piped 鍏叡瀹炰緥锛?
+娌欑鍙闂綉鍏冲煙鍚嶏紝涓嶇琚薄鏌撶殑鍩熴€?
 
-## 功能
+## 鍔熻兘
 
-| 端点 | 用途 |
+| 绔偣 | 鐢ㄩ€?|
 |---|---|
-| `GET /api/channel?channel=@handle` | **频道枚举**：列出某频道所有视频（标题/链接/日期/时长/播放量） |
-| `GET /api/resolve?url=<视频URL>` | **视频下载直链**：解析出沙箱可下载的直链 |
-| `GET /api/stream?u=<直链>` | **视频字节透传**：支持 Range，代理 googlevideo/pipedproxy 直链 |
+| `GET /api/channel?channel=@handle` | **棰戦亾鏋氫妇**锛氬垪鍑烘煇棰戦亾鎵€鏈夎棰戯紙鏍囬/閾炬帴/鏃ユ湡/鏃堕暱/鎾斁閲忥級 |
+| `GET /api/resolve?url=<瑙嗛URL>` | **瑙嗛涓嬭浇鐩撮摼**锛氳В鏋愬嚭娌欑鍙笅杞界殑鐩撮摼 |
+| `GET /api/stream?u=<鐩撮摼>` | **瑙嗛瀛楄妭閫忎紶**锛氭敮鎸?Range锛屼唬鐞?googlevideo/pipedproxy 鐩撮摼 |
 
-## 目录结构
+## 鐩綍缁撴瀯
 
 ```
 yt-gateway/
-└── functions/
-    ├── _lib/            # 下划线开头：不会变成路由，放共享代码
-    │   ├── innertube.js # clientVersion 自发现 + innertubePost + context
-    │   └── health.js    # 后端/实例冷却（连续失败 3 次才进冷却，冷却中只沉队尾不剔除）
-    └── api/
-        ├── channel.js   # 频道枚举（InnerTube browse 主力 → Piped → 频道 RSS）
-        ├── resolve.js   # 视频下载直链（davidcyriltech 主力 → Piped → InnerTube player）
-        └── stream.js    # 透传视频字节（支持 Range）
+鈹斺攢鈹€ functions/
+    鈹溾攢鈹€ _lib/            # 涓嬪垝绾垮紑澶达細涓嶄細鍙樻垚璺敱锛屾斁鍏变韩浠ｇ爜
+    鈹?  鈹溾攢鈹€ innertube.js # clientVersion 鑷彂鐜?+ innertubePost + context
+    鈹?  鈹斺攢鈹€ health.js    # 鍚庣/瀹炰緥鍐峰嵈锛堣繛缁け璐?3 娆℃墠杩涘喎鍗达紝鍐峰嵈涓彧娌夐槦灏句笉鍓旈櫎锛?
+    鈹斺攢鈹€ api/
+        鈹溾攢鈹€ channel.js   # 棰戦亾鏋氫妇锛圛nnerTube browse 涓诲姏 鈫?Piped 鈫?棰戦亾 RSS锛?
+        鈹溾攢鈹€ resolve.js   # 瑙嗛涓嬭浇鐩撮摼锛坉avidcyriltech 涓诲姏 鈫?Piped 鈫?InnerTube player锛?
+        鈹斺攢鈹€ stream.js    # 閫忎紶瑙嗛瀛楄妭锛堟敮鎸?Range锛?
 ```
 
-## 后端选型
+## 鍚庣閫夊瀷
 
-| 后端 | 状态 | 结论 |
+| 鍚庣 | 鐘舵€?| 缁撹 |
 |---|---|---|
-| davidcyriltech (`apis.davidcyriltech.my.id`) | ⚠️ 2026-10-12 判死（SSL EOF）；`/api/resolve` 实测又活了（2026-11-06，仍作下载主力） | 保留，Piped 兜底 |
-| Invidious 公共实例 | ❌ API 全关（`api.invidious.io` 实测 `api:false`，只剩 3 个实例且官方建议自托管） | 移除 |
-| **InnerTube 直连**（`youtubei/v1/browse` + `/player`） | ✅ 主力 | 不依赖任何第三方实例，实例死光也能用 |
-| **Piped 公共实例** | ✅ 兜底 | 联邦架构；`/c/{handle}` 已普遍 500，必须先把 handle 解析成 UCid 再走 `/channel/{id}` |
-| **频道 RSS**（`feeds/videos.xml`） | ✅ 最后兜底（2026-11-06 新增） | 只回 15 条、无翻页，但只要 `youtube.com` 通就有数据 |
+| davidcyriltech (`apis.davidcyriltech.my.id`) | 鈿狅笍 2026-10-12 鍒ゆ锛圫SL EOF锛夛紱`/api/resolve` 瀹炴祴鍙堟椿浜嗭紙2026-11-06锛屼粛浣滀笅杞戒富鍔涳級 | 淇濈暀锛孭iped 鍏滃簳 |
+| Invidious 鍏叡瀹炰緥 | 鉂?API 鍏ㄥ叧锛坄api.invidious.io` 瀹炴祴 `api:false`锛屽彧鍓?3 涓疄渚嬩笖瀹樻柟寤鸿鑷墭绠★級 | 绉婚櫎 |
+| **InnerTube 鐩磋繛**锛坄youtubei/v1/browse` + `/player`锛?| 鉁?涓诲姏 | 涓嶄緷璧栦换浣曠涓夋柟瀹炰緥锛屽疄渚嬫鍏変篃鑳界敤 |
+| **Piped 鍏叡瀹炰緥** | 鉁?鍏滃簳 | 鑱旈偊鏋舵瀯锛沗/c/{handle}` 宸叉櫘閬?500锛屽繀椤诲厛鎶?handle 瑙ｆ瀽鎴?UCid 鍐嶈蛋 `/channel/{id}` |
+| **棰戦亾 RSS**锛坄feeds/videos.xml`锛?| 鉁?鏈€鍚庡厹搴曪紙2026-11-06 鏂板锛?| 鍙洖 15 鏉°€佹棤缈婚〉锛屼絾鍙 `youtube.com` 閫氬氨鏈夋暟鎹?|
 
-## 2026-11-06 修复：`/api/channel` 从「一律 502」恢复到可用
+## 2026-11-06 淇锛歚/api/channel` 浠庛€屼竴寰?502銆嶆仮澶嶅埌鍙敤
 
-| 现象 | 根因 | 修法 |
+| 鐜拌薄 | 鏍瑰洜 | 淇硶 |
 |---|---|---|
-| `@handle` 查询必 502，`error: innertube HTTP 400 invalid argument` | `@handle` 被直接当成 `browseId` 发出去，InnerTube 只认 `UC...` | 新增 `resolveChannelId()`：先打 `navigation/resolve_url` 换 UCid（带进程内缓存） |
-| 换成 UCid 后 200，但 `videos: []` | 频道页视频已从 `videoRenderer` 换成 `lockupViewModel`，旧解析器一条都抽不到 | 解析器两种结构都认；时长取 badge 文本，播放量/发布时间从 `metadataRows` 里取 |
-| Videos 标签拿到的其实是 Home 标签内容 | Videos 的 `params` 不是固定常量（旧值会落回 Home） | 从频道页 `tabs[].tabRenderer.endpoint.browseEndpoint.params` 里读，读不到才回退内置值 |
-| InnerTube 偶发 `bad client` | `clientVersion` 写死会过期 | 启动时从 `youtube.com` 首页的 `INNERTUBE_CLIENT_VERSION` 取（缓存 6h），取不到用常量兜底 |
+| `@handle` 鏌ヨ蹇?502锛宍error: innertube HTTP 400 invalid argument` | `@handle` 琚洿鎺ュ綋鎴?`browseId` 鍙戝嚭鍘伙紝InnerTube 鍙 `UC...` | 鏂板 `resolveChannelId()`锛氬厛鎵?`navigation/resolve_url` 鎹?UCid锛堝甫杩涚▼鍐呯紦瀛橈級 |
+| 鎹㈡垚 UCid 鍚?200锛屼絾 `videos: []` | 棰戦亾椤佃棰戝凡浠?`videoRenderer` 鎹㈡垚 `lockupViewModel`锛屾棫瑙ｆ瀽鍣ㄤ竴鏉￠兘鎶戒笉鍒?| 瑙ｆ瀽鍣ㄤ袱绉嶇粨鏋勯兘璁わ紱鏃堕暱鍙?badge 鏂囨湰锛屾挱鏀鹃噺/鍙戝竷鏃堕棿浠?`metadataRows` 閲屽彇 |
+| Videos 鏍囩鎷垮埌鐨勫叾瀹炴槸 Home 鏍囩鍐呭 | Videos 鐨?`params` 涓嶆槸鍥哄畾甯搁噺锛堟棫鍊间細钀藉洖 Home锛?| 浠庨閬撻〉 `tabs[].tabRenderer.endpoint.browseEndpoint.params` 閲岃锛岃涓嶅埌鎵嶅洖閫€鍐呯疆鍊?|
+| InnerTube 鍋跺彂 `bad client` | `clientVersion` 鍐欐浼氳繃鏈?| 鍚姩鏃朵粠 `youtube.com` 棣栭〉鐨?`INNERTUBE_CLIENT_VERSION` 鍙栵紙缂撳瓨 6h锛夛紝鍙栦笉鍒扮敤甯搁噺鍏滃簳 |
 
-同批小改：Piped 实例 4 → 9 个（失败实例进 5 分钟冷却）、新增 RSS 兜底后端、不存在的频道直接回 404 `channel not found`（不再让三个后端各失败一遍）。
+鍚屾壒灏忔敼锛歅iped 瀹炰緥 4 鈫?9 涓紙澶辫触瀹炰緥杩?5 鍒嗛挓鍐峰嵈锛夈€佹柊澧?RSS 鍏滃簳鍚庣銆佷笉瀛樺湪鐨勯閬撶洿鎺ュ洖 404 `channel not found`锛堜笉鍐嶈涓変釜鍚庣鍚勫け璐ヤ竴閬嶏級銆?
 
-实测（2026-11-06，本机直连 YouTube）：
+瀹炴祴锛?026-11-06锛屾湰鏈虹洿杩?YouTube锛夛細
 
 ```
-@MrBeast                  → 200 innertube 30 条 + nextpage（翻页 30 条）
-UCX6OQ3DkcsbYNE6H8uQQuVA  → 200 innertube 30 条
-完整频道 URL              → 200 innertube 30 条
-@MrBeast&backend=piped    → 200 piped 30 条
-@MrBeast&backend=rss      → 200 rss 15 条
-@不存在的频道             → 404 {"error":"channel not found"}
+@MrBeast                  鈫?200 innertube 30 鏉?+ nextpage锛堢炕椤?30 鏉★級
+UCX6OQ3DkcsbYNE6H8uQQuVA  鈫?200 innertube 30 鏉?
+瀹屾暣棰戦亾 URL              鈫?200 innertube 30 鏉?
+@MrBeast&backend=piped    鈫?200 piped 30 鏉?
+@MrBeast&backend=rss      鈫?200 rss 15 鏉?
+@涓嶅瓨鍦ㄧ殑棰戦亾             鈫?404 {"error":"channel not found"}
 ```
 
-## 2026-11-06 加固：`/api/resolve`（同一套思路）
+## 2026-11-06 鍔犲浐锛歚/api/resolve`锛堝悓涓€濂楁€濊矾锛?
 
-| 项 | 之前 | 现在 |
+| 椤?| 涔嬪墠 | 鐜板湪 |
 |---|---|---|
-| `clientVersion` | 写死 `2.20251001.00.00`，过期即失效 | 从 `youtube.com` 首页 `INNERTUBE_CLIENT_VERSION` 自发现，缓存 6h（`_lib/innertube.js`） |
-| Piped 实例 | 4 个，无冷却，每次从头撞 | 9 个，逐个 8s 超时；**连续失败 3 次**才进 5 分钟冷却，冷却中只沉队尾不剔除（`_lib/health.js`） |
-| 单视频失败 | 直接封后端 5 分钟（一个直播视频就能把 david 打下去） | 不封：一次失败只记一击，3 击才冷却 |
-| 选流 | 按 `height` 排序，Piped 的 LBRY/HLS 兜底源 `height` 全是 0，会选中 LBRY（实测 60s 拿不到字节） | 按「mp4 优先 / YouTube 原生清晰度 > LBRY」打分，HLS（m3u8）直接不用——`/api/stream` 是字节透传，透传播放列表没意义 |
-| InnerTube player | 只有 WEB 客户端（现在常回 `LOGIN_REQUIRED`） | WEB → ANDROID 两档兜底 |
-| `?url=` 之外 | 只能传完整 URL | 也支持 `?v=<11 位 videoId>` |
+| `clientVersion` | 鍐欐 `2.20251001.00.00`锛岃繃鏈熷嵆澶辨晥 | 浠?`youtube.com` 棣栭〉 `INNERTUBE_CLIENT_VERSION` 鑷彂鐜帮紝缂撳瓨 6h锛坄_lib/innertube.js`锛?|
+| Piped 瀹炰緥 | 4 涓紝鏃犲喎鍗达紝姣忔浠庡ご鎾?| 9 涓紝閫愪釜 8s 瓒呮椂锛?*杩炵画澶辫触 3 娆?*鎵嶈繘 5 鍒嗛挓鍐峰嵈锛屽喎鍗翠腑鍙矇闃熷熬涓嶅墧闄わ紙`_lib/health.js`锛?|
+| 鍗曡棰戝け璐?| 鐩存帴灏佸悗绔?5 鍒嗛挓锛堜竴涓洿鎾棰戝氨鑳芥妸 david 鎵撲笅鍘伙級 | 涓嶅皝锛氫竴娆″け璐ュ彧璁颁竴鍑伙紝3 鍑绘墠鍐峰嵈 |
+| 閫夋祦 | 鎸?`height` 鎺掑簭锛孭iped 鐨?LBRY/HLS 鍏滃簳婧?`height` 鍏ㄦ槸 0锛屼細閫変腑 LBRY锛堝疄娴?60s 鎷夸笉鍒板瓧鑺傦級 | 鎸夈€宮p4 浼樺厛 / YouTube 鍘熺敓娓呮櫚搴?> LBRY銆嶆墦鍒嗭紝HLS锛坢3u8锛夌洿鎺ヤ笉鐢ㄢ€斺€擿/api/stream` 鏄瓧鑺傞€忎紶锛岄€忎紶鎾斁鍒楄〃娌℃剰涔?|
+| InnerTube player | 鍙湁 WEB 瀹㈡埛绔紙鐜板湪甯稿洖 `LOGIN_REQUIRED`锛?| WEB 鈫?ANDROID 涓ゆ。鍏滃簳 |
+| `?url=` 涔嬪 | 鍙兘浼犲畬鏁?URL | 涔熸敮鎸?`?v=<11 浣?videoId>` |
 
-实测（本机，2026-11-06）：
+瀹炴祴锛堟湰鏈猴紝2026-11-06锛夛細
 
 ```
-?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ → 200 davidcyriltech 480p
-?v=dQw4w9WgXcQ                                  → 200 davidcyriltech 480p
-?v=不存在的 id                                  → 502（三个后端各自报错，errors 里能看）
-无参数                                          → 400
-download_url 走 /api/stream → 206 + 前 1024 字节，magic "ftyp"（真·mp4）
-直播（如 jfKfPfyJRdk）                          → 502：david 500 / piped 500 / innertube 要登录，三家都不支持，属已知限制
+?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ 鈫?200 davidcyriltech 480p
+?v=dQw4w9WgXcQ                                  鈫?200 davidcyriltech 480p
+?v=涓嶅瓨鍦ㄧ殑 id                                  鈫?502锛堜笁涓悗绔悇鑷姤閿欙紝errors 閲岃兘鐪嬶級
+鏃犲弬鏁?                                         鈫?400
+download_url 璧?/api/stream 鈫?206 + 鍓?1024 瀛楄妭锛宮agic "ftyp"锛堢湡路mp4锛?
+鐩存挱锛堝 jfKfPfyJRdk锛?                         鈫?502锛歞avid 500 / piped 500 / innertube 瑕佺櫥褰曪紝涓夊閮戒笉鏀寔锛屽睘宸茬煡闄愬埗
 ```
 
-## 端点详解
+## 绔偣璇﹁В
 
-### 1. 频道枚举
+### 1. 棰戦亾鏋氫妇
 
 ```
 GET /api/channel?channel=@mkbhd
@@ -90,7 +90,7 @@ GET /api/channel?channel=UCxxxxxxxxxxxxxxxxxxxxxx
 GET /api/channel?channel=https://www.youtube.com/@mkbhd/videos
 ```
 
-返回（统一形状）：
+杩斿洖锛堢粺涓€褰㈢姸锛夛細
 
 ```json
 {
@@ -101,117 +101,116 @@ GET /api/channel?channel=https://www.youtube.com/@mkbhd/videos
     { "videoId": "abc123", "title": "...", "url": "https://www.youtube.com/watch?v=abc123",
       "published": "2 weeks ago", "views": "12,345", "duration": "10:25" }
   ],
-  "nextpage": "<token>",               // 有下一页时的翻页 token
+  "nextpage": "<token>",               // 鏈変笅涓€椤垫椂鐨勭炕椤?token
   "count": 30
 }
 ```
 
-翻页（**必须带 backend 锁回同一后端**）：
+缈婚〉锛?*蹇呴』甯?backend 閿佸洖鍚屼竴鍚庣**锛夛細
 
 ```
-GET /api/channel?channel=@mkbhd&nextpage=<上一页的nextpage>&backend=innertube
+GET /api/channel?channel=@mkbhd&nextpage=<涓婁竴椤电殑nextpage>&backend=innertube
 ```
 
-### 2. 视频下载直链
+### 2. 瑙嗛涓嬭浇鐩撮摼
 
 ```
 GET /api/resolve?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ
 ```
 
-返回（与旧 davidcyriltech 形状兼容，`video_origin.py` 零改动）：
+杩斿洖锛堜笌鏃?davidcyriltech 褰㈢姸鍏煎锛宍video_origin.py` 闆舵敼鍔級锛?
 
 ```json
 {
   "success": true,
   "result": {
     "type": "video", "format": "mp4", "title": "...",
-    "quality": "720p", "download_url": "https://你的网关.pages.dev/api/stream?u=...",
+    "quality": "720p", "download_url": "https://浣犵殑缃戝叧.pages.dev/api/stream?u=...",
     "_backend": "innertube"
   }
 }
 ```
 
-### 3. 视频字节透传
+### 3. 瑙嗛瀛楄妭閫忎紶
 
 ```
-GET /api/stream?u=<上一步 download_url 里的 u 参数>
+GET /api/stream?u=<涓婁竴姝?download_url 閲岀殑 u 鍙傛暟>
 ```
 
-## 部署步骤
+## 閮ㄧ讲姝ラ
 
 ```bash
-# 1. 装 wrangler 并登录 Cloudflare 账号（首次必须）
+# 1. 瑁?wrangler 骞剁櫥褰?Cloudflare 璐﹀彿锛堥娆″繀椤伙級
 npm install -g wrangler
 npx wrangler login
 
-# 2. 在仓库根目录（含 functions/ 的那一层）部署
-cd <这个仓库的检出目录>
+# 2. 鍦ㄤ粨搴撴牴鐩綍锛堝惈 functions/ 鐨勯偅涓€灞傦級閮ㄧ讲
+cd <杩欎釜浠撳簱鐨勬鍑虹洰褰?
 npx wrangler pages deploy . --project-name=yt-gateway
 
-# 3. 部署完拿到 https://yt-gateway.pages.dev
+# 3. 閮ㄧ讲瀹屾嬁鍒?https://yt-gateway.pages.dev
 ```
 
-## 部署后必做：填 GW 常量
+## 閮ㄧ讲鍚庡繀鍋氾細濉?GW 甯搁噺
 
-打开 `functions/api/resolve.js`，把第 7 行 `GW` 填成你的网关域名：
+鎵撳紑 `functions/api/resolve.js`锛屾妸绗?7 琛?`GW` 濉垚浣犵殑缃戝叧鍩熷悕锛?
 
 ```js
 const GW = "https://yt-gateway.pages.dev";
 ```
 
-**不填 GW，InnerTube/Piped 返回的直链就是裸 googlevideo/pipedproxy 链接，沙箱下不动。**
-填完重新部署一次。
+**涓嶅～ GW锛孖nnerTube/Piped 杩斿洖鐨勭洿閾惧氨鏄８ googlevideo/pipedproxy 閾炬帴锛屾矙绠变笅涓嶅姩銆?*
+濉畬閲嶆柊閮ㄧ讲涓€娆°€?
 
-## 部署后必测（从沙箱 curl）
+### 鐜鍙橀噺锛圥ages 鈫?Settings 鈫?Variables and secrets锛?
+
+| 鍙橀噺 | 浣滅敤 | 渚嬪瓙 |
+| --- | --- | --- |
+| `GATEWAY_KEY` | 閰嶄簡灏辫姹傚甫 `x-gateway-key` 澶达紝鍚﹀垯 `/api/search` 绛夎繑鍥?401锛涗笉閰嶅垯鍏紑 | 32 浣嶉殢鏈轰覆 |
+| `STREAM_ALLOW` | `/api/stream` 棰濆鏀捐鐨勭洿閾惧煙鍚嶏紝閫楀彿鍒嗛殧 | `ducks.party` |
+
+`/api/stream` 鐨勯粯璁ょ櫧鍚嶅崟鍙湁 `googlevideo.com`銆乣savetube.vip|me`銆乣odycdn.com` 鍜岀墖娈?`pipedproxy`銆?
+2026-11-12 瀹炴祴锛歚/api/resolve` 缁欏嚭鐨勭洿閾捐惤鍦?`piped-proxy.ducks.party`锛?*甯﹁繛瀛楃鐨?`piped-proxy` 涓嶅尮閰?`pipedproxy`**锛?
+浜庢槸 `/api/stream` 涓€寰?`403 host not allowed`銆傚姞涓?`STREAM_ALLOW=ducks.party` 骞堕噸鏂伴儴缃插悗锛屾暣鏉?resolve 鈫?stream 鎵嶉€氥€?
+
+鐜鍙橀噺鏀逛簡瑕侀噸鏂伴儴缃蹭竴娆℃墠鐢熸晥锛圙it 杩炴帴鐨勫伐绋嬶細push 涓€娆℃垨 Deployments 鈫?Retry锛夈€?
+
+## 閮ㄧ讲鍚庡繀娴嬶紙浠庢矙绠?curl锛?
 
 ```bash
-# 1. 频道枚举：应返回 JSON，x-backend 头告诉你实际走哪个后端
+# 1. 棰戦亾鏋氫妇锛氬簲杩斿洖 JSON锛寈-backend 澶村憡璇変綘瀹為檯璧板摢涓悗绔?
 curl -i "https://yt-gateway.pages.dev/api/channel?channel=@mkbhd"
 
-# 2. 视频直链：应返回 JSON，download_url 指向你的网关
+# 2. 瑙嗛鐩撮摼锛氬簲杩斿洖 JSON锛宒ownload_url 鎸囧悜浣犵殑缃戝叧
 curl -i "https://yt-gateway.pages.dev/api/resolve?url=https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 
-# 3. 字节透传：应返回视频字节（HTTP 206）
-curl -i -H "Range: bytes=0-1023" "https://yt-gateway.pages.dev/api/stream?u=<download_url 里的 u>"
+# 3. 瀛楄妭閫忎紶锛氬簲杩斿洖瑙嗛瀛楄妭锛圚TTP 206锛?
+curl -i -H "Range: bytes=0-1023" "https://yt-gateway.pages.dev/api/stream?u=<download_url 閲岀殑 u>"
 ```
 
-## 关键注意 / 已踩的坑
+## 鍏抽敭娉ㄦ剰 / 宸茶俯鐨勫潙
 
-| 事实 | 影响 |
+| 浜嬪疄 | 褰卞搷 |
 |---|---|
-| `*.workers.dev` DNS 污染 | 不能用 Workers，必须用 Pages Functions |
-| `hello.pages.dev` 实测 200（10-12） | `*.pages.dev` 基础设施本机可达 |
-| 你的自定义 pages.dev 域名是否可达**尚未验证** | 部署后第一步就测它，`hello` 通 ≠ 你的域名通 |
-| `googlevideo.com` / `youtubei.googleapis.com` 本机不可达 | 直链必须经 `/api/stream` 回源，枚举/解析走网关 |
-| InnerTube `clientVersion` 会过期 | 若 InnerTube 返回 404/`bad client`，更新 `resolve.js`/`channel.js` 里的 `clientVersion` 为更新的 `2.YYYYMMDD.XX.YY` |
-| InnerTube 对数据中心 IP 有风控 | browse（枚举）相对宽松，player（下载直链）可能偶发 429 → 此时自动落到 Piped 兜底 |
-| Piped 直链是 `pipedproxy-*.kavin.rocks` 代理地址 | 沙箱能否直连未知，统一走 `/api/stream` 兜底 |
-| Cloudflare Pages Functions 免费版对大响应有限制 | 超大视频（>100MB）透传可能失败，`/api/stream` 是流式但需实测上限 |
-| 沙箱 UDP 出站白名单 | WARP / WireGuard 隧道建不起来，不要在沙箱里试 |
+| `*.workers.dev` DNS 姹℃煋 | 涓嶈兘鐢?Workers锛屽繀椤荤敤 Pages Functions |
+| `hello.pages.dev` 瀹炴祴 200锛?0-12锛?| `*.pages.dev` 鍩虹璁炬柦鏈満鍙揪 |
+| 浣犵殑鑷畾涔?pages.dev 鍩熷悕鏄惁鍙揪**灏氭湭楠岃瘉** | 閮ㄧ讲鍚庣涓€姝ュ氨娴嬪畠锛宍hello` 閫?鈮?浣犵殑鍩熷悕閫?|
+| `googlevideo.com` / `youtubei.googleapis.com` 鏈満涓嶅彲杈?| 鐩撮摼蹇呴』缁?`/api/stream` 鍥炴簮锛屾灇涓?瑙ｆ瀽璧扮綉鍏?|
+| InnerTube `clientVersion` 浼氳繃鏈?| 鑻?InnerTube 杩斿洖 404/`bad client`锛屾洿鏂?`resolve.js`/`channel.js` 閲岀殑 `clientVersion` 涓烘洿鏂扮殑 `2.YYYYMMDD.XX.YY` |
+| InnerTube 瀵规暟鎹腑蹇?IP 鏈夐鎺?| browse锛堟灇涓撅級鐩稿瀹芥澗锛宲layer锛堜笅杞界洿閾撅級鍙兘鍋跺彂 429 鈫?姝ゆ椂鑷姩钀藉埌 Piped 鍏滃簳 |
+| Piped 鐩撮摼鏄?`pipedproxy-*.kavin.rocks` 浠ｇ悊鍦板潃 | 娌欑鑳藉惁鐩磋繛鏈煡锛岀粺涓€璧?`/api/stream` 鍏滃簳 |
+| Cloudflare Pages Functions 鍏嶈垂鐗堝澶у搷搴旀湁闄愬埗 | 瓒呭ぇ瑙嗛锛?100MB锛夐€忎紶鍙兘澶辫触锛宍/api/stream` 鏄祦寮忎絾闇€瀹炴祴涓婇檺 |
+| 娌欑 UDP 鍑虹珯鐧藉悕鍗?| WARP / WireGuard 闅ч亾寤轰笉璧锋潵锛屼笉瑕佸湪娌欑閲岃瘯 |
 
-## 接进 video_origin.py
+## 鎺ヨ繘 video_origin.py
 
 ```python
-# 频道枚举
+# 棰戦亾鏋氫妇
 export VIDEO_ENUM_API="https://yt-gateway.pages.dev/api/channel?channel={u}"
 
-# 视频下载直链
+# 瑙嗛涓嬭浇鐩撮摼
 export VIDEO_ORIGIN_API="https://yt-gateway.pages.dev/api/resolve?url={u}"
 ```
 
-`{u}` 会被替换成 URL 编码后的链接。`resolve` 返回 JSON 形状与 davidcyriltech 一致：
-`{success, result:{title, quality, download_url, ...}}`，现有解析代码零改动。
-
-## 鉴权与环境变量
-
-`/api/search` 支持可选的 header 鉴权，**只有配置了 `GATEWAY_KEY` 才启用**；未配置时保持公开，不会把自己锁死。
-
-```
-Cloudflare Pages → Settings → Variables and secrets → 添加 GATEWAY_KEY（Production）
-客户端：curl -H "x-gateway-key: <值>" "https://yt-gateway.pages.dev/api/search?q=endoscopy"
-```
-
-- 只校验请求头 `x-gateway-key`，不接受 `?key=`（查询串会进日志与历史记录）。
-- 启用鉴权时响应改为 `cache-control: no-store`，避免边缘缓存绕过校验。
-- 未带或带错 key 返回 `401 {"success":false,"error":"unauthorized"}`。
-- 新增/修改环境变量后需要一次新部署才生效（改一行 README 也算）。
+`{u}` 浼氳鏇挎崲鎴?URL 缂栫爜鍚庣殑閾炬帴銆俙resolve` 杩斿洖 JSON 褰㈢姸涓?davidcyriltech 涓€鑷达細
+`{success, result:{title, quality, download_url, ...}}`锛岀幇鏈夎В鏋愪唬鐮侀浂鏀瑰姩銆?
